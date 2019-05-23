@@ -44,21 +44,11 @@ systemctl start docker
 
 ## 解决CAdvisor在swarm中无法监控容器数据问题
 
-另外记录一个很有意思的问题。部署CAdvisor监控时，如果在CentOS7上开启了user namespace，需要启动的时候添加 --privileged=true及--userns=host两个参数。但很可惜这两个参数不兼容swarm集群，导致在线上docker swarm集群中CAdvisor无法监控集群容器。
+docker swarm集群部署CAdvisor没有跟/var/run/docker.sock通信的权限，导致无法监控集群容器。解决方案：
 
-但奇葩的是，在部署过程中，线下集群里成功监控到了数据，导致我一度认为是官方文档有误，喜滋滋的跑去部署线上，果然，没数据。
+1，在集群里的各台机器上对于需要访问/var/run/docker.sock的模块单独使用docker run加上--privileged参数启动。但这种方式实际生产环境操作起来比较麻烦，集群里的每台机器都要手动部署一堆模块，这些模块没有办法使用集群功能。
 
-翻了至少一百个网页和文档并且多方尝试之后得出结论docker swarm集群部署CAdvisor确实没有跟/var/run/docker.sock通信的权限，才会导致无法监控集群容器，官方文档诚不欺我。因此线上集群取不到数据是正常现象，线下能够取到数据反而不正常。（此处耗费20根头发）
+2, 使用socat转发/var/run/docker.sock，CAdvisor模块连接转发后的文件【推荐方案】
 
-那么就只好对比下线上和线下到底有什么差别了。
-
-一通操作后得出结论：主机环境没有差别，docker版本号一致，镜像一致，系统相关配置一致。（此处想不通挠掉10根头发）
-
-线上和线下主机上/var/run/docker.sock的权限都是srw-rw--- root docker，既然线上容器内没有权限访问，那对比下两处容器内的权限吧。哎哟，果然有新发现，线下容器docker.sock所属用户及群组是nobody bin，线上容器内所属用户群组则是nobody nobody。
-
-再回忆下上面配置的docker用户映射，是把uid/gid为1000的用户映射到了容器内0的用户/群组。检查下容器内的群组编号，两个环境容器内群组bin编号都为1。好吧，问题终于解决了，显然是把host上gid为1001的群组映射到了容器内gid为1的bin群组，好巧不巧，线下gid为1001的群组恰好是docker群组，才导致容器内有连接权限。把线上的docker群组gid改为1001之后，果然线上也取到了数据。（此处太兴奋，甩掉了20根头发）
-
-由于本司用户量级并不是很大，研发人员也不多，因此在一开始选型时就排除了相对较复杂且难维护的k8s集群，折中之下只好采用这种不太优雅的办法解决问题。期待docker官方能够早日提供更适当的解决方案。
-
-另外，还需要给/var/docker/lib/1000.1000/image/overlay2/layerdb/mounts/路径增加所有用户的rx权限，才能取到docker容器的监控数据。
+3, 记录一个巧合，不推荐使用。由于/var/run/docker.sock属于docker用户组，所以主机的docker gid刚好和容器内有root权限用户的gid映射上的时候，也可以访问到/var/run/docker.sock
 
